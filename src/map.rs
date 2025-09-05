@@ -5,11 +5,18 @@ use hexx::*;
 use serde::{ Deserialize,Serialize };
 use std::collections::HashMap;
 
+use crate::tileset;
+
 pub struct Plugin;
 
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
-        
+        app.register_type::<HashMap<usize, tileset::Tile>>()
+            .register_type::<HashMap<Location, (Entity, tileset::TileRef)>>()
+            .register_type::<(Entity, tileset::TileRef)>()
+            .register_type::<Location>()
+            .register_type::<Layer>()
+            .add_systems(Update, update_location);
     }
 }
 
@@ -63,6 +70,22 @@ impl WorldMapExt for &mut World {
     }
 }
 
+#[derive(Component, Default, Reflect, Debug)]
+#[reflect(Component)]
+pub struct Layer {
+    pub name: String,
+    pub tiles: HashMap<Location, (Entity, tileset::TileRef)>
+}
+
+impl Layer {
+    pub fn new(name: String) -> Self {
+        Self {
+            name,
+            tiles: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Component)]
 pub struct UpdateLocation;
 
@@ -84,5 +107,49 @@ impl Map {
         Vec3::new(pos.x, 0.0, pos.y)
     }
 
-    
+    pub fn tile_translation(
+        &self,
+        tile: &tileset::Tile,
+        location: Location 
+    ) -> Vec3 {
+        let pos = self.layout.hex_to_world_pos(location.into());
+
+        Vec3::new(pos.x, tile.transform.translation.y, pos.y)
+    }
+
+    pub fn tile_transform(
+        &self,
+        tile: &tileset::Tile,
+        location: Location,
+        tile_transform: &tileset::TileTransform
+    ) -> Transform {
+        let pos = self.layout.hex_to_world_pos(location.into());
+
+        Transform { 
+            translation: Vec3::new(pos.x, tile.transform.translation.y, pos.y), 
+            rotation: tile.transform.rotation * Quat::from_euler(EulerRot::XYZ, 0.0, tile_transform.rotation.into(), 0.0), 
+            scale: tile.transform.scale 
+        }
+    }
+
+    pub fn hex_to_world_pos(&self, hex: Hex, y: f32) -> Vec3 {
+        let hex = self.layout.hex_to_world_pos(hex);
+        
+        Vec3::new(hex.x, y, hex.y)
+    }
+}
+
+fn update_location(
+    mut query: Query<
+        (&mut Location, &GlobalTransform),
+        (With<UpdateLocation>, Changed<GlobalTransform>)
+    >,
+    map: Query<&Map>
+) {
+    let Ok(map) = map.single() else { return; };
+
+    for (mut loc, transform) in &mut query {
+        let hex = map.layout.world_pos_to_hex(transform.translation().xz());
+        loc.set_if_neq(hex.into());
+    }
 }

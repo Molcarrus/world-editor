@@ -216,3 +216,28 @@ pub struct TileTransform {
     pub rotation: TileRotation
 }
 
+#[derive(Bundle)]
+pub struct TileBundle {
+    tile_ref: TileRef,
+    location: map::Location,
+    tile_transform: TileTransform,
+    scene: SceneRoot
+}
+
+impl TileBundle {
+    pub fn new(
+        map: &map::Map,
+        location: map::Location,
+        tile_transform: TileTransform,
+        tileset: &TileSet,
+        tileset_entity: Entity,
+        tile_id: TileId
+    ) -> Self {
+        let tile = tileset
+            .tiles
+            .get(&tile_id)
+            .unwrap_or_else(|| panic!("TileId {} in TileSet {}", tile_id, tileset.name));
+
+        
+    }
+}

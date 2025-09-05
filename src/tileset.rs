@@ -1,7 +1,12 @@
 use anyhow::{ Context,Result };
 use bevy::{
-    prelude::*,
-    tasks::{ IoTaskPool,Task }
+    prelude::*, render::render_resource::{
+        Extent3d,
+        TextureDescriptor,
+        TextureDimension,
+        TextureFormat,
+        TextureUsages
+    }, scene::ron, tasks::{ IoTaskPool,Task }
 };
 use bevy_egui::{ egui,EguiUserTextures };
 use serde::{
@@ -25,14 +30,22 @@ pub struct Plugin;
 
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
-        
+        app.register_type::<TileSet>()
+            .register_type::<TileRef>()
+            .register_type::<TileRotation>()
+            .register_type::<Tile>()
+            .register_type::<TileId>()
+            .register_type::<Vec<TileId>>()
+            .add_systems(Update, (update_tile_scene, update_tile_transform))
+            .add_systems(Startup, (load_tiles, tileset_exporter, tileset_importer));
     }
 }
 
 pub type TileId = usize;
 
-#[derive(Debug, Default, Clone, Reflect, FromReflect, Component, Serialize, Deserialize)]
-#[reflect(Component)]
+#[derive(Debug, Default, Clone, Component, Serialize, Deserialize)]
+#[derive(Reflect)]
+#[reflect(Component, FromReflect)]
 pub struct Tile {
     pub id: TileId,
     pub name: String,
@@ -238,6 +251,217 @@ impl TileBundle {
             .get(&tile_id)
             .unwrap_or_else(|| panic!("TileId {} in TileSet {}", tile_id, tileset.name));
 
-        
+        let _transform = map.tile_transform(tile, location, &tile_transform);
+        let scene = tile.scene.as_ref().unwrap().clone();
+
+        TileBundle {
+            location,
+            tile_ref: TileRef { tileset: tileset_entity, tile: tile_id },
+            tile_transform,
+            scene: SceneRoot(scene)
+        }
+    }
+}
+
+#[derive(Component)]
+pub struct TileScene(Handle<Scene>);
+
+fn tile_ref_changed(
+    mut commands: Commands,  
+    tiles: Query<Entity, (With<TileScene>, Changed<TileRef>)>
+) {
+    for entity in &tiles {
+        commands.entity(entity).remove::<TileScene>();
+    }
+}
+
+fn update_tile_scene(
+    mut commands: Commands,
+    tiles: Query<(Entity, &TileRef), Without<TileScene>>,
+    tilesets: Query<&mut TileSet>
+) {
+    for (entity, tile_ref) in &tiles {
+        let Ok(tileset) = tilesets.get(tile_ref.tileset) else {
+            warn!("unknown tileset for tile {:?}: {:?}; removing entity", entity, tile_ref);
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let Some(tile) = tileset.tiles.get(&tile_ref.tile) else {
+            warn!("unknown tile for tile {:?}: {:?}; removing entity", entity, tile_ref);
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let Some(scene) = tile.scene.as_ref() else {
+            debug!("scene not present for {:?}: {:?}", entity, tile_ref);
+            continue;
+        };
+        commands.entity(entity).insert(SceneRoot(scene.clone()));
+    }
+}
+
+fn update_tile_transform(
+    mut commands: Commands,
+    map: Query<&map::Map>,
+    tile_transforms: Query<
+        (Entity, &TileRef, &TileTransform, &map::Location),
+        Or<(Changed<TileTransform>, Changed<map::Location>)>
+    >,
+    tilesets: Query<&mut TileSet>
+) {
+    let Ok(map) = map.single() else { return; };
+    for (entity, tile_ref, tile_transform, location) in &tile_transforms {
+        let Ok(tileset) = tilesets.get(tile_ref.tileset) else {
+            warn!("unknow tileset for tile: {:?}: {:?}; removing entity", entity, tile_ref);
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let Some(tile) = tileset.tiles.get(&tile_ref.tile) else {
+            warn!("unknown tile for tile {:?}: {:?}; removing entity", entity, tile_ref);
+            commands.entity(entity).despawn();
+            continue;
+        };
+        let transform = map.tile_transform(tile, *location, tile_transform);
+        commands.entity(entity).insert(transform);
+    }
+}
+
+fn load_tiles(
+    asset_server: Res<AssetServer>,
+    mut tilesets: Query<&mut TileSet, Changed<TileSet>>,
+    mut images: ResMut<Assets<Image>>,
+    mut render_queue: ResMut<crate::render::RenderQueue>,
+    mut egui_user_textures: ResMut<EguiUserTextures>
+) {
+    for mut tileset in &mut tilesets {
+        for tile in tileset.tiles.values_mut() {
+            let scene = match tile.scene {
+                Some(_) => continue,
+                None => {
+                    let scene = asset_server.load(format!("{}#Scene0", tile.path.to_string_lossy()));
+                    tile.scene = Some(scene.clone());
+                    scene
+                }
+            };
+
+            match tile.egui_texture_id {
+                Some(_) => continue,
+                None => {
+                    let image = alloc_render_image(48 * 2, 48 * 2);
+                    let handle = images.add(image);
+                    tile.egui_texture_id = Some(egui_user_textures.add_image(handle.clone()));
+                    render_queue.push(handle, scene);
+                }
+            }
+        }
+    }
+}
+
+fn alloc_render_image(width: u32, height: u32) -> Image {
+    let size = Extent3d {
+        width,
+        height,
+        ..default()
+    };
+
+    let mut image = Image {
+        texture_descriptor: TextureDescriptor { 
+            label: None, 
+            size, 
+            mip_level_count: 1, 
+            sample_count: 1, 
+            dimension: TextureDimension::D2, 
+            format: TextureFormat::Bgra8UnormSrgb, 
+            usage: TextureUsages::TEXTURE_BINDING 
+                | TextureUsages::COPY_DST 
+                | TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[] 
+        },
+        ..default()
+    };
+
+    image.resize(size);
+    
+    image
+}
+
+#[derive(Component, Debug)]
+pub struct TilesetImporter {
+    path: PathBuf,
+    task: Task<Result<TileSet>>
+}
+
+impl TilesetImporter {
+    pub fn new(path: PathBuf) -> Self {
+        let task_pool = IoTaskPool::get();
+        let path_copy = path.clone();
+        let task = task_pool.spawn(async move {
+            let f = std::fs::File::open(path).context("failed to open file")?;
+            let tileset: TileSet = ron::de::from_reader(f).context("failed to parse tileset")?;
+
+            Ok::<TileSet, anyhow::Error>(tileset)
+        });
+
+        Self {
+            path: path_copy,
+            task
+        }
+    }
+}
+
+fn tileset_importer(
+    mut commands: Commands,
+    mut tileset_importers: Query<(Entity, &mut TilesetImporter)>
+) {
+    for (entity, mut importer) in &mut tileset_importers {
+        let Some(result) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut importer.task)) else { continue };
+        match result {
+            Err(e) => {
+                warn!("failed to load tileset: {}: {:?}", importer.path.to_string_lossy(), e);
+                commands.entity(entity).despawn();
+            }
+            Ok(tileset) => {
+                let name = importer.path.file_stem().unwrap().to_string_lossy();
+                commands
+                    .entity(entity)
+                    .remove::<TilesetImporter>()
+                    .insert((Name::new(format!("tileset: {}", name)), tileset));
+            }
+        }
+    }
+}
+
+#[derive(Component, Debug)]
+pub struct TilesetExporter {
+    task: Task<Result<()>>
+}
+
+impl TilesetExporter {
+    pub fn new(
+        path: PathBuf,
+        tileset: TileSet 
+    ) -> Self {
+        let task_pool = IoTaskPool::get();
+        let task = task_pool.spawn(async move {
+            let f = std::fs::File::create(path.clone()).context(format!("open tileset {:?}", path))?;
+            ron::ser::to_writer_pretty(f, &tileset, ron::ser::PrettyConfig::default())
+                .context(format!("writing tileset to {:?}", path))?;
+
+            Ok::<(), anyhow::Error>(())
+        });
+
+        Self { task }
+    }
+}
+
+fn tileset_exporter(
+    mut commands: Commands,
+    mut tileset_exporters: Query<(Entity, &mut TilesetExporter)>
+) {
+    for (entity, mut exporter) in &mut tileset_exporters {
+        let Some(result) = futures_lite::future::block_on(futures_lite::future::poll_once(&mut exporter.task)) else { continue };
+        if let Err(e) = result {
+            warn!("failed to export tileset: {:#?}", e);
+        }
+        commands.entity(entity).despawn();
     }
 }

@@ -170,6 +170,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.99"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0674a1ddeecb70197781e945de4b3b8ffb61fa939a5597bcf48503737663100"
+
+[[package]]
 name = "approx"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2770,6 +2776,16 @@ name = "hexf-parse"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
+
+[[package]]
+name = "hexx"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62c48463d4a40aa16a39917af6258c0ba751232c5c4c2064be1d3477fa207d4c"
+dependencies = [
+ "glam",
+ "serde",
+]
 
 [[package]]
 name = "icu_collections"
@@ -6061,10 +6077,13 @@ dependencies = [
 name = "world-editor"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bevy",
  "bevy_egui",
  "futures-lite",
+ "hexx",
  "rfd",
+ "serde",
 ]
 
 [[package]]

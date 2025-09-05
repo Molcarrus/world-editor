@@ -5,9 +5,7 @@ use std::{
 };
 use anyhow::{ bail,Context,Result };
 use bevy::{
-    ecs::system::{ Command,EntityCommands },
-    prelude::*,
-    tasks::{ IoTaskPool,Task }
+    ecs::system::{ Command,EntityCommands }, prelude::*, scene::ron::{self, ser::{to_writer_pretty, PrettyConfig}}, tasks::{ IoTaskPool,Task }
 };
 use futures_lite::future;
 use hexx::HexLayout;
@@ -223,7 +221,7 @@ impl MapFormat {
 
     fn add_layers(
         &mut self,
-        mut world: &mut World,
+        world: &mut World,
         root: Entity 
     ) -> Result<&mut Self> {
         let mut query = world.query::<(&map::Layer, &ChildOf, &Children)>();
@@ -231,8 +229,212 @@ impl MapFormat {
 
         for (layer, child_of, children) in query.iter(world) {
             if child_of.parent() != root {
-                
+                continue;
             }
+            let mut layer: Layer = layer.into();
+
+            for child in children {
+                let Ok((location, tile_ref, tile_transform)) = tiles.get(world, *child) else { continue };
+                let tileset = self
+                    .entity_map
+                    .get(&tile_ref.tileset)
+                    .context(format!("tileset SaveId not found: {:?}", tile_ref))?;
+
+                let tile = Tile {
+                    location: *location,
+                    tileset: *tileset,
+                    tile_id: tile_ref.tile,
+                    rotation: tile_transform.rotation
+                };
+                layer.tiles.push(tile);
+            }
+            self.layers.push(layer);
         }
+
+        Ok(self)
+    }
+
+    pub fn try_spawn(
+        &self,
+        root: &mut EntityCommands
+    ) -> Result<()> {
+        if self.version != MAP_FORMAT_VERSION {
+            bail!(
+                "unsupported map version: {} != {}",
+                self.version,
+                MAP_FORMAT_VERSION
+            );
+        }
+        debug!("loading map into {:?}", root.id());
+
+        let map = map::Map {
+            layout: self.layout.clone()
+        };
+
+        let mut entity_map = HashMap::new();
+        for (id, tileset) in &self.tilesets {
+            let entity = root
+                .commands()
+                .spawn((Name::new("tileset"), tileset.clone()))
+                .id();
+            root.add_child(entity);
+            entity_map.insert(id, entity);
+        }
+
+        for layer in &self.layers {
+            let layer_component: map::Layer = layer.into();
+            let layer_entity = root
+                .commands()
+                .spawn((
+                    Name::new("layer"),
+                    layer_component,
+                    Transform::default(),
+                    Visibility::default()
+                ))
+                .id();
+            root.add_child(layer_entity);
+
+            let mut tiles = Vec::new();
+
+            for tile in &layer.tiles {
+                let tile_ref = tileset::TileRef {
+                    tileset: *entity_map.get(&tile.tileset).unwrap(),
+                    tile: tile.tile_id,
+                };
+
+                let tile_entity = root
+                    .commands()
+                    .spawn((
+                        tile.location,
+                        tile_ref,
+                        tileset::TileTransform {
+                            rotation: tile.rotation
+                        },
+                        Transform::default(),
+                        Visibility::default()
+                    ))
+                    .id();
+                tiles.push(tile_entity);
+            }
+
+            root
+                .commands()
+                .entity(layer_entity)
+                .add_children(&tiles);
+        }
+
+        root.insert((Transform::default(), Visibility::default(), map));
+
+        Ok(())
+    }
+}
+
+pub struct SaveMapCommand {
+    path: PathBuf,
+    map: Entity,
+}
+
+impl SaveMapCommand {
+    pub fn new(path: PathBuf, map: Entity) -> Self {
+        Self { path,map }
+    }
+}
+
+impl Command for SaveMapCommand {
+    fn apply(self, world: &mut World) {
+        let map = match MapFormat::try_new(world, self.map) {
+            Ok(map) => map,
+            Err(err) => {
+                warn!("failed to save map: {:#?}", err);
+                return;
+            }
+        };
+
+        let task_pool = IoTaskPool::get();
+        let task = task_pool.spawn(async move {
+            let f = File::create(self.path.clone()).context(format!("open map: {:?}", self.path))?;
+            to_writer_pretty(f, &map, PrettyConfig::default()).context(format!("writing map to {:?}", self.path))?;
+
+            Ok::<(), anyhow::Error>(())
+        });
+
+        world.spawn(MapWriterTask(task));
+    }
+}
+
+#[derive(Component)]
+struct MapWriterTask(Task<Result<()>>);
+
+fn map_writers(
+    mut commands: Commands,  
+    mut map_writers: Query<(Entity, &mut MapWriterTask)>
+) {
+    for (entity, mut writer) in &mut map_writers {
+        let Some(result) = future::block_on(future::poll_once(&mut writer.0)) else { continue };
+        if let Err(e) = result {
+            warn!("{:#?}", e);
+        }
+        commands.entity(entity).despawn();
+    }
+}
+
+#[derive(Component)]
+pub struct MapImporter {
+    path: PathBuf,
+    task: Task<Result<MapFormat>>
+}
+
+impl MapImporter {
+    pub fn new(path: PathBuf) -> Self {
+        let path_copy = path.clone();
+        let task_pool = IoTaskPool::get();
+        let task = task_pool.spawn(async move {
+            let buf = std::fs::read_to_string(path).context("failed to read file")?;
+            let map = ron::from_str(&buf).context("failed to parse map")?;
+
+            Ok(map)
+        });
+
+        Self {
+            path: path_copy,
+            task
+        }
+    }
+}
+
+fn map_importer(
+    mut commands: Commands,
+    mut map_importers: Query<(Entity, &mut MapImporter)>
+) {
+    for (entity, mut importer) in &mut map_importers {
+        let Some(result) = future::block_on(future::poll_once(&mut importer.task)) else { continue };
+        match result {
+            Err(e) => {
+                warn!(
+                    "failed to load map{}: {:?}",
+                    importer.path.to_string_lossy(),
+                    e 
+                );
+                commands.entity(entity).despawn();
+            }
+            Ok(map) => {
+                let name = importer.path.file_stem().unwrap().to_string_lossy();
+                let mut entity_ref = commands.entity(entity);
+
+                if let Err(e) = map.try_spawn(&mut entity_ref) {
+                    error!(
+                        "failed to spawn map {}: {:?}",
+                        importer.path.to_string_lossy(),
+                        e 
+                    );
+                    entity_ref.despawn();
+                    continue;
+                }
+
+                entity_ref
+                    .remove::<MapImporter>()
+                    .insert(Name::new(format!("map: {}", name)));
+            }
+        };
     }
 }

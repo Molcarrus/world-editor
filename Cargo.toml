@@ -6,8 +6,15 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.99"
 bevy = { version = "0.16.1", features = ["serialize"] }
+bevy-inspector-egui = "0.33.1"
+bevy_dolly = "0.0.5"
 bevy_egui = "0.36.0"
+bevy_mod_debugdump = "0.13.0"
+bevy_mod_picking = "0.20.1"
+bevy_mod_sysfail = "7.0.0"
+chrono = "0.4.41"
 futures-lite = "2.6.1"
 hexx = { version = "0.21.0", features = ["serde"] }
+leafwing-input-manager = "0.17.1"
 rfd = "0.15.4"
 serde = "1.0.219"

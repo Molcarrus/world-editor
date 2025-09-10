@@ -10,6 +10,7 @@ use bevy::{
 };
 use bevy_dolly::dolly::rig;
 use bevy_dolly::prelude::*;
+use bevy_egui::egui::epaint::tessellator::path;
 use bevy_egui::{ egui, EguiContexts };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_mod_picking::prelude::*;
@@ -279,3 +280,191 @@ fn handle_input(
     }
 }
 
+trait ResultLogger {
+    fn log_err(&self);
+}
+
+impl<T> ResultLogger for Result<T> {
+    fn log_err(&self) {
+        if let Err(e) = self {
+            error!("{:?}", e);
+        }
+    }
+}
+
+fn handle_ui_events(world: &mut World) {
+    use world_editor::helper::run_system;
+    use EditorUiEvent::*;
+
+    let mut events = world.remove_resource::<Events<EditorUiEvent>>().unwrap();
+
+    for event in events.drain() {
+        match event {
+            MapNew => {
+                run_system(world, (), close_map);
+                run_system(world, (), create_map);
+            }
+            MapClose => run_system(world, (), close_map),
+            MapSaveAs => {
+                world.spawn(filepicker::Picker::save_dialog(PickerEvent::MapSave(None)).build());
+            }
+            MapSave(path) => run_system(world, path.clone(), save_map),
+            MapLoad(path) => run_system(world, path.clone(), load_map),
+            RedrawMapTiles => run_system(world, (), redraw_map_tiles),
+            DeleteTileset(entity) => run_system(world, entity, remove_tileset)
+        }
+    }
+
+    world.insert_resource(events);
+}
+
+fn save_map(
+    In(path): In<std::path::PathBuf>,
+    mut commands: Commands,  
+    mut state: ResMut<EditorState>,
+    map: Query<Entity, With<map::Map>>
+) {
+    let Result::Ok(entity) = map.single() else {
+        warn!("no map loaded");
+        return;
+    };
+    info!("save map to {}", path.to_string_lossy());
+    commands.queue(persistence::SaveMapCommand::new(path, entity));
+    state.unsaved_changes = false;
+}
+
+fn load_map(
+    In(path): In<std::path::PathBuf>,
+    mut commands: Commands
+) {
+    info!("load map {}", path.to_string_lossy());
+    commands.spawn(persistence::MapImporter::new(path));
+}
+
+fn close_map(
+    mut commands: Commands,
+    mut state: ResMut<EditorState>,
+    mut tile_selection: ResMut<TileSelection>,
+    map: Query<Entity, With<map::Map>>,
+    cursor: Query<Entity, With<MapCursor>>
+) {
+    if state.unsaved_changes {
+        info!("closing map {:?}; discarding changes", state.map_path);
+    } else {
+        info!("closing map {:?}", state.map_path);
+    }
+
+    let cursor = cursor.single().unwrap();
+
+    commands
+        .entity(cursor)
+        .remove::<(tileset::TileRef, SceneRoot)>()
+        .despawn();
+
+    tile_selection.tiles.clear();
+
+    if let Result::Ok(entity) = map.single() {
+        commands.entity(entity).despawn();
+    }
+
+    state.map_path = None;
+    state.unsaved_changes = false;
+    state.active_tileset = None;
+    state.active_layer = None;
+}
+
+fn create_map(
+    mut commands: Commands,  
+    mut state: ResMut<EditorState>
+) {
+    info!("create new map");
+
+    commands
+        .spawn((
+            Name::new("map"),
+            map::Map::default(),
+            Transform::default(),
+            Visibility::default()
+        ))
+        .with_children(|map| {
+            let layer = map
+                .spawn((
+                    Name::new("layer"),
+                    map::Layer::new("Background".into()),
+                    Transform::default(),
+                    Visibility::default()
+                ))  
+                .id();
+
+            state.active_layer = Some(layer);
+            let tileset = map
+                .spawn((
+                    Name::new("tileset"),
+                    tileset::TileSet::new("Default Tileset")
+                ))
+                .id();
+
+            state.active_tileset = Some(tileset);
+        });
+
+    state.map_path = None;
+    state.unsaved_changes = false;
+}
+
+fn map_loaded(
+    mut state: ResMut<EditorState>,
+    map: Query<&Children, Added<map::Map>>,
+    tilesets: Query<&mut tileset::TileSet>,
+    layers: Query<&mut map::Layer>
+) {
+    let Result::Ok(map_children) = map.single() else { return; };
+
+    for child in map_children {
+        if state.active_tileset.is_none() && tilesets.get(*child).is_ok() {
+            state.active_tileset = Some(*child);
+        }
+
+        if state.active_layer.is_none() && layers.get(*child).is_ok() {
+            state.active_layer = Some(*child);
+        }
+    }
+}
+
+fn remove_tileset(
+    In(tileset_id): In<Entity>,
+    mut state: ResMut<EditorState>,
+    mut commands: Commands,  
+    tilesets: Query<Entity, With<tileset::TileSet>>
+) {
+    commands.entity(tileset_id).despawn();
+    state.active_tileset = tilesets.iter().find(|entity| *entity != tileset_id);
+}
+
+fn redraw_map_tiles(
+    mut commands: Commands,  
+    tile_selection: Res<TileSelection>,
+    tiles: Query<(
+        Entity,
+        &tileset::TileRef,
+        &tileset::TileTransform,
+        &map::Location
+    )>,
+    tilesets: Query<&tileset::TileSet>,
+    map: Query<&map::Map>
+) {
+    let Result::Ok(map) = map.single() else { return; };
+
+    for (entity, tile_ref, tile_transform, location) in &tiles {
+        if !tile_selection.tiles.contains(tile_ref) {
+            continue;
+        }
+        let Result::Ok(tileset) = tilesets.get(tile_ref.tileset) else {
+            warn!("unknown tileset {:?} in entity {:?}", tile_ref.tileset, entity);
+            continue;
+        };
+
+        let bundle = tileset::TileBundle::new(map, *location, tile_transform.clone(), tileset, tile_ref.tileset, tile_ref.tile);
+
+        commands.entity(entity).insert(bundle);
+    }
+}

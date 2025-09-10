@@ -8,6 +8,7 @@ use bevy::{
     core_pipeline::tonemapping::Tonemapping,
     prelude::*
 };
+use bevy_dolly::dolly::rig;
 use bevy_dolly::prelude::*;
 use bevy_egui::{ egui, EguiContexts };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
@@ -196,5 +197,85 @@ pub enum InputActions {
 }
 
 fn input_map() -> InputMap<InputActions> {
-    
+    let mouse_move = MouseMove::default();
+    let mouse_wheel = MouseScroll::default();
+    InputMap::new([
+        (InputActions::CameraRotateCW, KeyCode::BracketRight),
+        (InputActions::CameraRotateCCW, KeyCode::BracketLeft),
+        (InputActions::ResetCamera, KeyCode::KeyZ),
+        (InputActions::ZeroCamera, KeyCode::KeyO),
+        (InputActions::CameraPan, KeyCode::Space),
+        (InputActions::TileRotateCW, KeyCode::KeyQ),
+        (InputActions::TileRotateCCW, KeyCode::KeyE)
+    ])
+    .insert(InputActions::LeftClick, MouseButton::Left)
+    .insert_dual_axis(InputActions::CameraScale,mouse_wheel)
+    .insert_dual_axis(InputActions::MouseMove, mouse_move)
+    .clone()
 }
+
+#[derive(Component)]
+pub struct RigComponent(Rig);
+
+fn handle_input(
+    action_state: Query<&ActionState<InputActions>>,
+    mut cursor: Query<&mut tileset::TileTransform, With<MapCursor>>,
+    mut camera: Query<(&mut RigComponent, &mut Projection, &Transform), With<MainCamera>>,
+    mut egui_contexts: EguiContexts
+) {
+    let actions = action_state.single().unwrap();
+    let (mut rig, mut projection, transform) = camera.single_mut().unwrap();
+    let Projection::Orthographic(ref mut projection) = *projection else { panic!("wrong scaling mode") };
+
+    let mouse_input = !egui_contexts.ctx_mut().unwrap().is_pointer_over_area();
+
+    if mouse_input && actions.pressed(&InputActions::CameraPan) {
+        let vector = actions.axis_pair(&InputActions::MouseMove).xy() * -0.02 * projection.scale;
+
+        let (mut euler, axis_angle) = transform.rotation.to_axis_angle();
+
+        euler.x = 0.0;
+        euler.z = 0.0;
+        let rotation = Quat::from_axis_angle(euler, axis_angle);
+
+        if let Some(pos) = rig.0.try_driver_mut::<Position>() {
+            pos.translate(rotation * Vec3::new(vector.x, 0.0, vector.y));
+        }
+    }
+
+    let camera_yp = rig.0.driver_mut::<YawPitch>();
+    if actions.just_pressed(&InputActions::CameraRotateCW) {
+        let yaw = camera_yp.yaw_degrees + 60.0;
+        camera_yp.yaw_degrees = yaw.rem_euclid(360.0);
+    } else if actions.just_pressed(&InputActions::CameraRotateCCW) {
+        let yaw = camera_yp.yaw_degrees - 60.0;
+        camera_yp.yaw_degrees = yaw.rem_euclid(360.0);
+    }
+
+    if actions.just_pressed(&InputActions::ResetCamera) {
+        camera_yp.yaw_degrees = 45.0;
+        camera_yp.pitch_degrees = -30.0;
+        projection.scale = 1.0;
+    }
+
+    if actions.just_pressed(&InputActions::ZeroCamera) {
+        camera_yp.yaw_degrees = 0.0;
+        camera_yp.pitch_degrees = -90.0;
+        projection.scale = 1.0;
+    }
+
+    let scale = actions.value(&InputActions::CameraScale);
+    if mouse_input && scale != 0.0 {
+        projection.scale = (projection.scale * (1.0 - scale * 0.005)).clamp(0.001, 15.0);
+    }
+
+    let mut tile_transform = cursor.single_mut().unwrap();
+    if actions.just_pressed(&InputActions::TileRotateCW) {
+        tile_transform.rotation = tile_transform.rotation.clockwise();
+    }
+
+    if actions.just_pressed(&InputActions::TileRotateCCW) {
+        tile_transform.rotation = tile_transform.rotation.counter_clockwise();
+    }
+}
+

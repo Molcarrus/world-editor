@@ -3,6 +3,7 @@ use std::io::Write;
 
 use anyhow::{ bail, Context, Ok, Result };
 use bevy::ecs::event::EventReader;
+use bevy::input::mouse::MouseWheel;
 use bevy::{
     core_pipeline::tonemapping::Tonemapping,
     prelude::*
@@ -11,6 +12,7 @@ use bevy_dolly::prelude::*;
 use bevy_egui::{ egui, EguiContexts };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_mod_picking::prelude::*;
+use leafwing_input_manager::axislike::DualAxisDirection;
 use leafwing_input_manager::prelude::*;
 use std::path::PathBuf;
 
@@ -130,8 +132,11 @@ enum EditorUiEvent {
 #[derive(Debug, Clone, Copy)]
 struct MapCursorMoveEvent(Vec3);
 
-#[derive(Resource, Default)]
-struct EditorUiEventReader(EventReader<EditorUiEvent>);
+fn handle_editor_ui_events(mut reader: EventReader<EditorUiEvent>) {
+    for event in reader.read() {
+        
+    }
+}
 
 #[derive(Debug, Event)]
 enum PickerEvent {
@@ -160,4 +165,36 @@ impl filepicker::PickerEvent for PickerEvent {
             PickerEvent::TilesetExport(t, _) => PickerEvent::TilesetExport(t, Some(result[0].clone())) 
         };
     }
+}
+
+#[derive(Component)]
+struct MainCamera;
+
+#[derive(Component)]
+struct GridSelectionPlane;
+
+#[derive(Component, Default, Debug, Reflect)]
+struct MapCursor {
+    position: Vec3,
+    grid_location: map::Location,
+    tile_transform: tileset::TileTransform
+}
+
+#[derive(Actionlike, PartialEq, Eq, Clone, Copy, Hash, Debug, Reflect)]
+pub enum InputActions {
+    MouseMove,
+    MouseScrollY,
+    LeftClick,
+    CameraPan,
+    CameraScale,
+    CameraRotateCW,
+    CameraRotateCCW,
+    ResetCamera,
+    ZeroCamera,
+    TileRotateCW,
+    TileRotateCCW
+}
+
+fn input_map() -> InputMap<InputActions> {
+    
 }

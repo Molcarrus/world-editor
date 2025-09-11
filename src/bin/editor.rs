@@ -6,7 +6,8 @@ use bevy::ecs::event::EventReader;
 use bevy::input::mouse::MouseWheel;
 use bevy::{
     core_pipeline::tonemapping::Tonemapping,
-    prelude::*
+    prelude::*,
+    input::mouse::MouseButton
 };
 use bevy_dolly::dolly::rig;
 use bevy_dolly::prelude::*;
@@ -18,6 +19,8 @@ use leafwing_input_manager::axislike::DualAxisDirection;
 use leafwing_input_manager::prelude::*;
 use std::path::PathBuf;
 
+use crate::backend::prelude::PickSet;
+
 use world_editor::{
     filepicker,
     map,
@@ -25,6 +28,8 @@ use world_editor::{
     prelude::*,
     tileset
 };
+
+mod editor_ui;
 
 fn main() {
     
@@ -131,14 +136,8 @@ enum EditorUiEvent {
     RedrawMapTiles
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Event, Debug, Clone, Copy)]
 struct MapCursorMoveEvent(Vec3);
-
-fn handle_editor_ui_events(mut reader: EventReader<EditorUiEvent>) {
-    for event in reader.read() {
-        
-    }
-}
 
 #[derive(Debug, Event)]
 enum PickerEvent {
@@ -467,4 +466,86 @@ fn redraw_map_tiles(
 
         commands.entity(entity).insert(bundle);
     }
+}
+
+fn handle_picker_events(
+    mut commands: Commands,  
+    mut picker_events: EventReader<PickerEvent>,
+    mut state: ResMut<EditorState>,
+    mut tilesets: Query<&mut tileset::TileSet>,
+    mut editor_events: EventWriter<EditorUiEvent>,
+    map: Query<Entity, With<map::Map>>
+) {
+    for event in picker_events.read() {
+        match event {
+            PickerEvent::AddTiles { tileset_id,files } => {
+                let Result::Ok(mut tileset) = tilesets.get_mut(*tileset_id) else { continue; };
+                let Some(paths) = files else { continue; };
+                for path in paths {
+                    tileset.add_title(path.clone());
+                } 
+                state.unsaved_changes = true;
+            }
+            PickerEvent::MapSave(path) => {
+                let Some(path) = path else { continue; };
+                if state.map_path.is_none() {
+                    state.map_path = Some(path.clone());
+                }
+
+                editor_events.write(EditorUiEvent::MapSave(path.clone()));
+            }
+            PickerEvent::MapLoad(path) => {
+                let Some(path) = path else { continue; };
+                if state.map_path.is_none() {
+                    state.map_path = Some(path.clone());
+                }
+
+                editor_events.write(EditorUiEvent::MapLoad(path.clone()));
+            }
+            PickerEvent::TilesetImport(paths) => {
+                let Some(paths) = paths else { continue; };
+                let Result::Ok(map) = map.single() else {
+                    error!("no map foundl not loading tileset");
+                    continue;
+                };
+                commands.entity(map).with_children(|map| {
+                    for path in paths {
+                        let id = map.spawn(tileset::TilesetImporter::new(path.clone())).id();
+                        state.active_tileset = Some(id);
+                    }
+                });
+            }
+            PickerEvent::TilesetExport(tileset_id, path) => {
+                let Some(path) = path else { continue; };
+                let Result::Ok(tileset) = tilesets.get(*tileset_id) else {
+                    warn!("tileset not found: {:?}", event);
+                    continue;
+                };
+                commands.spawn(tileset::TilesetExporter::new(path.clone(), tileset.clone()));
+            }
+        }
+    }
+
+    picker_events.clear();
+}
+
+fn handle_map_cursor_events(
+    mut commands: Commands,
+    mut events: EventReader<MapCursorMoveEvent>,
+    state: Res<EditorState>,
+    map: Query<&map::Map>,
+    buttons: Res<PickSet::Input<MouseButton>>,
+    cursor: Query<(Entity, &tileset::TileRef, &tileset::TileTransform), With<MapCursor>>,
+    tiles: Query<
+        (
+            Entity,
+            &map::Location,
+            &tileset::TileRef,
+            &tileset::TileTransform,
+            &ChildOf
+        ),
+        Without<MapCursor>
+    >
+) -> Result<()> {
+
 }

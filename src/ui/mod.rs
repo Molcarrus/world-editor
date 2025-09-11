@@ -1,2 +1,2 @@
-mod widget;
-mod widgets;
+pub mod widget;
+pub mod widgets;

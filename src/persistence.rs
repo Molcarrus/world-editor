@@ -21,7 +21,8 @@ pub struct Plugin;
 
 impl bevy::app::Plugin for Plugin {
     fn build(&self, app: &mut App) {
-        
+        app.register_type::<SaveId>()
+            .add_systems(Update, (map_writers, map_importer));
     }
 }
 

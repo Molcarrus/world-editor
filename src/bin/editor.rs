@@ -534,7 +534,7 @@ fn handle_map_cursor_events(
     mut events: EventReader<MapCursorMoveEvent>,
     state: Res<EditorState>,
     map: Query<&map::Map>,
-    buttons: Res<PickSet::Input<MouseButton>>,
+    buttons: Res<ButtonInput<MouseButton>>,
     cursor: Query<(Entity, &tileset::TileRef, &tileset::TileTransform), With<MapCursor>>,
     tiles: Query<
         (

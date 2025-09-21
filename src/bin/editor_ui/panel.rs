@@ -45,7 +45,7 @@ impl BasicWidget for RemoveTilesetButton {
             .button("➖")
             .clicked() 
         {
-            world.spawn(bundle)
+            world.spawn()
         }
     }
 }

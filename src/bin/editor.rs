@@ -15,6 +15,7 @@ use bevy_egui::egui::epaint::tessellator::path;
 use bevy_egui::{ egui, EguiContexts };
 use bevy_inspector_egui::quick::WorldInspectorPlugin;
 use bevy_mod_picking::prelude::*;
+use bevy_mod_sysfail::sysfail;
 use leafwing_input_manager::axislike::DualAxisDirection;
 use leafwing_input_manager::prelude::*;
 use std::path::PathBuf;
@@ -547,5 +548,111 @@ fn handle_map_cursor_events(
         Without<MapCursor>
     >
 ) -> Result<()> {
+    let Some(event) = events.read().last() else { return Ok(()) };
+    let Result::Ok(map) = map.single() else { return Ok(()) };
+    let (_, location) = map.snap_to_grid(event.0);
 
+    let Result::Ok((cursor, tile_ref, tile_transform)) = cursor.single() else { return Ok(()) };
+    commands.entity(cursor).insert(location);
+    trace!("move cursor: {:?}, {:?}", event, location);
+
+    if buttons.get_pressed().len() == 0 {
+        return Ok(());
+    }
+
+    let layer = state.active_layer.context("no active layer")?;
+
+    for (tile_entity, tile_location, tile_tile_ref, tile_tile_transform, tile_parent) in &tiles {
+        if tile_parent.parent() != layer {
+            continue;
+        }
+        if *tile_location != location {
+            continue;
+        }
+
+        if tile_tile_ref == tile_ref 
+            && tile_tile_transform == tile_transform
+            && buttons.pressed(MouseButton::Left) 
+        {
+            return Ok(());
+        }
+
+        commands.entity(tile_entity).despawn();
+    }
+
+    if buttons.pressed(MouseButton::Left) {
+        commands 
+            .spawn((
+                location,
+                *tile_ref,
+                tile_transform.clone(),
+                Transform::default(),
+                Visibility::default()
+            ))
+            .add_child(layer);
+
+        debug!("insert tile: {:?} @ {:?}", tile_ref, location);
+    }
+
+    Ok(())
+}
+
+fn update_cursor_model(
+    mut commands: Commands,
+    tile_selection: Res<TileSelection>,
+    cursor: Query<Entity, With<MapCursor>>
+) -> Result<()> {
+    if !tile_selection.is_changed() {
+        return Ok(());
+    }
+    let Some(tile_ref) = tile_selection.active_tile() else { return Ok(()) };
+
+    let cursor = cursor.single().context("failed to get cursor entity")?;
+    commands.entity(cursor).insert(*tile_ref);
+
+    Ok(())
+}
+
+fn update_cursor(
+    mut commands: Commands,
+    map: Query<&map::Map>,
+    cursor: Query<(Entity, &MapCursor)>,
+    tile_selection: Res<TileSelection>,
+    tilesets: Query<&tileset::TileSet>
+) -> Result<()> {
+    if !tile_selection.is_changed() {
+        return Ok(());
+    }
+
+    let map = map.single().context("get Map resource")?;
+    let tileset::TileRef {
+        tileset: tileset_id,
+        tile: tile_id
+    } = *tile_selection.active_tile().context("get active tile")?;
+
+    let (entity, cursor) = cursor.single().unwrap();
+    let tileset = tilesets.get(tileset_id)?;
+    let tile = tileset.tiles.get(&tile_id).context(format!("tile not found: Tileset {} ({:?}), TileId {}", tileset.name, tileset_id, tile_id))?;
+
+    let Some(scene) = &tile.scene else {
+        bail!(
+            "no scene for tile: Tileset {} ({:?}), TileId {}",
+            tileset.name, tileset_id, tile_id
+        );
+    };
+
+    let transform = map.tile_transform(tile, cursor.grid_location, &cursor.tile_transform);
+
+    commands
+        .entity(entity)
+        .insert(SceneRoot(scene.clone()))
+        .insert(transform);
+
+    Ok(())
+}
+
+pub fn draw_ui(world: &mut World) {
+    use world_editor::ui::widget::*;
+
+    
 }
